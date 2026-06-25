@@ -21,9 +21,15 @@ CONCURRENCY ?= 8
 PUBLIC ?= 0
 KERNEL ?= maj0rt0m/private-eval-proxy
 SECRET_DATASET ?= maj0rt0m/aas-env
+PROXY_REF ?=
 
 # PUBLIC=1 -> Python `True` baked into the notebook's RUN_PUBLIC; anything else -> `False`.
 PUBPY := $(if $(filter 1,$(PUBLIC)),True,False)
+
+# PROXY_REF=<branch|tag|sha> pins the notebook's git install to that ref (appends @REF to the
+# git+https PROXY_SOURCE). Used to test in-flight fixes from a debug branch before they hit main.
+# Empty (default) -> install tracks the repo's default branch, as committed.
+PROXY_SED := $(if $(PROXY_REF),-e 's#\(PROXY_SOURCE = "git+[^"@]*\)"#\1@$(PROXY_REF)"#',)
 
 # Load secrets from env.json into the shell BEFORE any command that needs them. Python targets
 # pick up env.json via `_sdk` at import, but shell commands (the kaggle CLI) do not — so recipes
@@ -87,6 +93,7 @@ run-kaggle-gpu:
 _kaggle-push:
 	@sed -e 's/^BACKEND = .*/BACKEND = "$(BACKEND)"  # baked by make/' \
 	     -e 's/^RUN_PUBLIC = .*/RUN_PUBLIC = $(PUBPY)  # baked by make/' \
+	     $(PROXY_SED) \
 	     $(NB_SRC) > $(NB_TMP)
 	jupytext --to notebook $(NB_TMP) -o $(NB_OUT)
 	@rm -f $(NB_TMP)
