@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kaggle-aas-private-eval-proxy"
+version = "0.1.0"
+description = "A proxy for the private eval of the Kaggle 'AI Agent Security: Multi-Step Tool Attacks' competition: a realistic private-guardrail stand-in + an anti-gaming scorer."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "aduriseti" }]
+keywords = ["kaggle", "ai-agent-security", "guardrail", "red-team", "llm"]
+
+# `aicomp-sdk` (the competition SDK, imports as `aicomp_sdk`) is on PyPI, so `pip install` pulls it
+# like any other dependency — never vendored or edited. `private_eval_proxy._sdk` only adds an
+# offline/Kaggle fallback locator (competition mount / AICOMP_SDK_DIR) for the `kaggle_evaluation`
+# gguf path, which is mount-only. See README "Setup".
+dependencies = [
+    "aicomp-sdk>=3.1.2",
+    "openai>=1.0.0",
+    "numpy>=1.24",
+    "llm-guard",
+]
+
+[project.optional-dependencies]
+# On-Kaggle GGUF/llama-cpp target backend (the offline / accelerator path).
+kaggle = ["llama-cpp-python"]
+dev = ["pytest>=7", "jupytext>=1.15"]
+
+[project.scripts]
+kaggle-aas-private-eval-proxy = "private_eval_proxy.runner:main"
+
+[tool.setuptools.packages.find]
+include = ["private_eval_proxy*"]
+
+[tool.pytest.ini_options]
+markers = ["slow: tests that exercise the real replay path (deterministic agent)"]

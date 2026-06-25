@@ -1,0 +1,26 @@
+# Build / cache
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+
+# Run artifacts
+artifacts/
+*.results.json
+
+# Secrets (never commit)
+env.json
+.env
+
+# Generated notebook: the jupytext `.py` is the single source of truth; the `.ipynb` is built from
+# it on demand (`make notebook`, and automatically inside the Kaggle push targets), so it is not
+# committed.
+notebooks/*.ipynb
+
+# OS / editor
+.DS_Store
+*.swp
+.venv/
+venv/
