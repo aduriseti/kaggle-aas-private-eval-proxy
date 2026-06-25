@@ -18,6 +18,8 @@ env.json
 # it on demand (`make notebook`, and automatically inside the Kaggle push targets), so it is not
 # committed.
 notebooks/*.ipynb
+notebooks/.push/
+notebooks/.configured.py
 
 # OS / editor
 .DS_Store

@@ -38,12 +38,12 @@
 # %% [markdown]
 # ## How to run
 #
-# Pick a **backend** for the target models (and the LLM-judge):
+# Pick a single **backend** for the target models — it also wires the LLM-judge (same backend + model):
 #
-# | backend | accelerator | internet | secret | cost view |
-# |---|---|---|---|---|
-# | `openrouter` | **None (CPU)** | **On** (Settings → Internet) | `OPENROUTER_API_KEY` | **$** |
-# | `kaggle_gguf` | **GPU (T4)** | off (models pre-staged) | none | **wall-time** |
+# | backend | accelerator | internet | secret | judge | cost view |
+# |---|---|---|---|---|---|
+# | `openrouter` | **None (CPU)** | **On** (Settings → Internet) | `OPENROUTER_API_KEY` | same OpenRouter model | **$** |
+# | `kaggle_gguf` | **GPU (T4)** | **On** (one-time HF model pull) | none | **reuses the loaded GGUF** | **wall-time** |
 #
 # - **OpenRouter** is the easiest *and* the fastest: no GPU, just enable Internet and provide the
 #   key (3 ways below). Replays are network-bound, so they fan out across a thread pool sized by
@@ -51,11 +51,13 @@
 #   candidate**, so a **1,000-candidate** sweep is ≈ **~20 min and ~$0.10–0.15** at `CONCURRENCY=8`
 #   (raise it to go faster, until OpenRouter rate-limits). It **cannot** be the real *offline*
 #   competition submission (internet must be off there) — it is a validation tool.
-# - **kaggle_gguf** runs the official GGUF models on the GPU like `aas-local-validation`. A single
-#   model in GPU memory means replays run **serially** against a hard ~9,000 s/phase budget —
+# - **kaggle_gguf** runs the official GGUF target models on the GPU like `aas-local-validation`. A
+#   single model in GPU memory means replays run **serially** against a hard ~9,000 s/phase budget —
 #   empirically only ~160–620 single-hop candidates finish, and **~700+ time out and score zero**, so
-#   a ~1k-candidate portfolio **TLEs the competition deadline** here. OpenRouter is the quick loop;
-#   the GPU path is the faithful-but-slow offline check.
+#   a ~1k-candidate portfolio **TLEs the competition deadline** here. The GGUF is pulled from
+#   HuggingFace (internet **on**, one-time) and the **judge reuses that same loaded model** — one
+#   model on the GPU, no key, self-contained. (Set `PRIVATE_GUARD_JUDGE_BACKEND=mock` to run no judge
+#   model at all — a pure target-path smoke.)
 #
 # The OpenRouter key is **never written into this notebook**. It is resolved, in order, from: (1) a
 # line you uncomment below, (2) Kaggle **Secrets**, or (3) a **private dataset** `env.json` attached
@@ -63,8 +65,7 @@
 
 # %%
 # === Config ===
-BACKEND = "openrouter"          # "openrouter" | "kaggle_gguf"
-JUDGE_BACKEND = None            # None -> auto ("openrouter" for openrouter, "competition" for gguf)
+BACKEND = "openrouter"          # "openrouter" | "kaggle_gguf" — also wires the LLM-judge (shared)
 TARGETS = ["gpt_oss", "gemma"]
 ENV = "private"                 # which guard regime to score against: "private" (the proxy) | "public"
 RUN_PUBLIC = False              # also run the SDK public baseline (evaluate_redteam)? off by default
@@ -90,13 +91,20 @@ os.environ.setdefault("PYTHONUTF8", "1")
 print("backend:", BACKEND, "| env:", ENV, "| targets:", ", ".join(TARGETS), "| reps:", REPS)
 
 # %%
-# === OpenRouter key + internet (OpenRouter backend only) ===
-# Resolution order: (1) an inline value you set, (2) Kaggle Secrets, (3) a private dataset env.json.
-# No key literal is committed — leave the line below commented unless you are editing interactively.
+# === OpenRouter key + internet ===
+# The OpenRouter key/internet is needed only when BACKEND == "openrouter". The LLM-**judge** is not a
+# separate axis — it runs on the *same* backend and model as the target agent (openrouter target ->
+# openrouter judge; kaggle_gguf target -> reuse the already-loaded GGUF on the GPU, no key/internet,
+# no second load). So a gguf run is self-contained. (Set PRIVATE_GUARD_JUDGE_BACKEND=mock for a
+# no-judge smoke — verdicts from PRIVATE_GUARD_JUDGE_MOCK_VERDICT.) Key resolution order: (1) an
+# inline value you set, (2) Kaggle Secrets, (3) a private dataset env.json. No key literal is
+# committed — leave the line below commented unless you are editing interactively.
 
 # os.environ["OPENROUTER_API_KEY"] = "sk-or-v1-..."   # <-- uncomment to supply your own key inline
 
-if BACKEND == "openrouter" and not os.environ.get("OPENROUTER_API_KEY"):
+need_openrouter = (BACKEND == "openrouter")
+
+if need_openrouter and not os.environ.get("OPENROUTER_API_KEY"):
     # (2) Kaggle Secrets — convenient when editing in the Kaggle UI (Add-ons → Secrets).
     try:
         from kaggle_secrets import UserSecretsClient
@@ -115,12 +123,13 @@ if BACKEND == "openrouter" and not os.environ.get("OPENROUTER_API_KEY"):
             except Exception:
                 continue
 
-if BACKEND == "openrouter":
+if need_openrouter:
     if not os.environ.get("OPENROUTER_API_KEY"):
         raise RuntimeError(
-            "No OPENROUTER_API_KEY. Provide it one of three ways: uncomment the inline line above, "
-            "add it under Add-ons → Secrets, or attach a private dataset containing env.json via "
-            "kernel-metadata dataset_sources. Also enable Settings → Internet (phone-verified)."
+            "No OPENROUTER_API_KEY (needed by the OpenRouter target and/or judge). Provide it one of "
+            "three ways: uncomment the inline line above, add it under Add-ons → Secrets, or attach a "
+            "private dataset containing env.json via kernel-metadata dataset_sources. Also enable "
+            "Settings → Internet (phone-verified)."
         )
     import urllib.request
     try:
@@ -129,12 +138,7 @@ if BACKEND == "openrouter":
         raise RuntimeError(f"Cannot reach OpenRouter — enable Settings → Internet. ({e})")
     print("OpenRouter reachable; key not stored in the notebook.")
 
-# Judge backend: openrouter judge online, competition (SDK hosted model) offline.
-os.environ.setdefault(
-    "PRIVATE_GUARD_JUDGE_BACKEND",
-    JUDGE_BACKEND or ("openrouter" if BACKEND == "openrouter" else "competition"),
-)
-print("judge backend:", os.environ["PRIVATE_GUARD_JUDGE_BACKEND"])
+print("backend:", BACKEND, "(judge shares the target backend + model)")
 
 # %%
 # === Dependencies ===
@@ -182,9 +186,9 @@ print("private_eval_proxy", private_eval_proxy.__version__, "ready")
 # competitors report the **private** phase timing out at far fewer candidates than the public one,
 # and submission *runtime itself* leaking guardrail behavior (a documented timing side-channel) —
 # both consistent with an extra **per-tool-call model invocation** the public keyword filter never
-# makes. The judge model is swappable (`PRIVATE_GUARD_JUDGE_BACKEND`), runs through the SDK agent
-# path, and its output tokens count against that budget — which is *why* a judge-heavy private guard
-# reproduces the private grader's lower candidate ceiling.
+# makes. The judge runs on the **same backend + model as the target** (it shares that wiring, not a
+# separate config) through the SDK agent path, and its output tokens count against that budget —
+# which is *why* a judge-heavy private guard reproduces the private grader's lower candidate ceiling.
 
 # %%
 # === Load the attack portfolio (candidates.jsonl OR a submission attack.py) ===
@@ -197,8 +201,7 @@ if ATTACK_PY:
     candidates = [{"id": f"c{i}", "user_messages": list(c.user_messages)}
                   for i, c in enumerate(cand_objs)]
 else:
-    path = CANDIDATES_PATH or str(Path(private_eval_proxy.__file__).resolve().parent.parent
-                                  / "candidates.sample.jsonl")
+    path = CANDIDATES_PATH or str(runner.default_candidates_path())
     candidates = runner.load_candidates(Path(path))
     AttackAlgorithm = runner.attack_class_from_candidates(candidates)
 

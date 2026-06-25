@@ -135,8 +135,9 @@ evidential:
   latent space"* ([#710234](https://www.kaggle.com/competitions/ai-agent-security-multi-step-tool-attacks/discussion/710234))
   similarly points at a neural, per-tool-call guard rather than the public tool-layer keyword filter.
 
-The judge model is swappable (`PRIVATE_GUARD_JUDGE_BACKEND=openrouter|competition`); all calls go
-through the SDK agent path.
+The judge runs on the **same backend and model as the target agent** — one backend selection wires
+both (it is not a separate axis); all calls go through the SDK agent path. The lone explicit override
+is `PRIVATE_GUARD_JUDGE_BACKEND=mock`, an opt-in no-judge stub for CI.
 
 ### Anti-gaming scorer (`scoring_v2`)
 
@@ -177,7 +178,8 @@ attach the model datasets.
 
 ## The two backends (and their cost models)
 
-A single flag picks the target-model backend; the judge backend is an independent axis.
+A single flag picks the target-model backend; the judge runs on that same backend and model (one
+selection wires both — `mock` is the only explicit override, for CI).
 
 | backend | accelerator | internet | secret | cost model |
 |---|---|---|---|---|

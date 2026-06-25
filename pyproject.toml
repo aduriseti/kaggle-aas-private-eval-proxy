@@ -34,5 +34,10 @@ kaggle-aas-private-eval-proxy = "private_eval_proxy.runner:main"
 [tool.setuptools.packages.find]
 include = ["private_eval_proxy*"]
 
+[tool.setuptools.package-data]
+# Ship the sample candidate portfolio inside the wheel so the notebook / CLI can find it after
+# a plain `pip install` (resolved by runner.default_candidates_path).
+private_eval_proxy = ["candidates.sample.jsonl"]
+
 [tool.pytest.ini_options]
 markers = ["slow: tests that exercise the real replay path (deterministic agent)"]

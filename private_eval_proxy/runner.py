@@ -67,7 +67,8 @@ def replay_one(rec: dict, target: str, *, guard_kind: str, max_hops: int,
     started = time.perf_counter()
 
     if guard_kind == "private":
-        guard = PrivateGuardrail(debug_sink=sink)
+        # The judge shares the agent-under-test's wiring: same backend + target model.
+        guard = PrivateGuardrail(debug_sink=sink, judge_backend=backend, judge_target=target)
 
         def hook_factory(_state=guard.state):
             reg = HookRegistry()
@@ -255,6 +256,16 @@ def attack_class_from_candidates(candidates: list[dict]):
     return AttackAlgorithm
 
 
+def default_candidates_path() -> Path:
+    """Path to the bundled sample candidates. Works both **installed** (shipped as package
+    data beside this module) and from a **source checkout** (repo root, for editable/local
+    runs where the file may still sit next to pyproject.toml)."""
+    packaged = Path(__file__).resolve().parent / "candidates.sample.jsonl"
+    if packaged.is_file():
+        return packaged
+    return Path(__file__).resolve().parent.parent / "candidates.sample.jsonl"
+
+
 def load_candidates(path: Path) -> list[dict]:
     candidates: list[dict] = []
     for line in Path(path).read_text().splitlines():
@@ -266,12 +277,11 @@ def load_candidates(path: Path) -> list[dict]:
 
 
 def main(argv=None) -> int:
-    here = Path(__file__).resolve().parent.parent
     parser = argparse.ArgumentParser(
         description="Replay attack candidates against one env (public|private). Pure replay — "
                     "allocation/CI/reporting live in the repo-level orchestrator."
     )
-    parser.add_argument("--candidates", default=str(here / "candidates.sample.jsonl"))
+    parser.add_argument("--candidates", default=str(default_candidates_path()))
     parser.add_argument("--targets", default="gpt_oss,gemma", help="comma-separated short names")
     parser.add_argument("--backend", default="openrouter",
                         choices=["openrouter", "kaggle_gguf", "deterministic"])

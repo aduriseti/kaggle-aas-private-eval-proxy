@@ -34,7 +34,14 @@ def _already_importable() -> bool:
 def _find_sdk_root() -> Path | None:
     """Directory to add to ``sys.path`` so ``import aicomp_sdk`` works (or None if already)."""
     override = os.environ.get("AICOMP_SDK_DIR", "").strip()
-    if override and (Path(override) / "aicomp_sdk").is_dir():
+    if override:
+        # A set-but-invalid override is a LOUD error, never a silent fall-through to a different
+        # (ambient pip / Kaggle) SDK — mirrors harness/_bootstrap._resolve_sdk_root.
+        if not (Path(override) / "aicomp_sdk").is_dir():
+            raise RuntimeError(
+                f"AICOMP_SDK_DIR={override!r} does not contain an `aicomp_sdk/` package. "
+                "Point it at a directory holding aicomp_sdk/, or unset it."
+            )
         return Path(override)
 
     if _already_importable():
@@ -86,8 +93,10 @@ def _load_env_json() -> None:
             if cand.is_file():
                 try:
                     data = json.loads(cand.read_text())
-                except Exception:
-                    continue
+                except json.JSONDecodeError as exc:
+                    # A malformed env.json is a user error to surface, not to swallow and silently
+                    # run without secrets (which later fails opaquely on a missing API key).
+                    raise RuntimeError(f"env.json at {cand} is not valid JSON: {exc}") from exc
                 for k, v in data.items():
                     if v and not os.environ.get(k):
                         os.environ[k] = str(v)
