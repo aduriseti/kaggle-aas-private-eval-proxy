@@ -122,7 +122,7 @@ _kaggle-push:
 	@$(LOADENV) while true; do \
 		s=$$(kaggle kernels status $(KERNEL) 2>/dev/null | tr -d '\r'); \
 		echo "  $$s"; \
-		case "$$s" in *complete*|*error*|*cancelAcknowledged*) break;; esac; \
+		case "$$(echo "$$s" | tr A-Z a-z)" in *complete*|*error*|*cancel*) break;; esac; \
 		sleep 20; \
 	done
 	@rm -rf $(BUILD)
