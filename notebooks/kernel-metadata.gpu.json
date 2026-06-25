@@ -1,0 +1,20 @@
+{
+  "id": "maj0rt0m/private-eval-proxy-gpu",
+  "title": "Private-Eval Proxy (GPU)",
+  "code_file": "kaggle-aas-private-eval-proxy.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_tpu": false,
+  "enable_internet": true,
+  "keywords": [],
+  "dataset_sources": [
+    "maj0rt0m/aas-env"
+  ],
+  "kernel_sources": [],
+  "competition_sources": [
+    "ai-agent-security-multi-step-tool-attacks"
+  ],
+  "model_sources": []
+}

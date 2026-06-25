@@ -12,7 +12,9 @@
 PY ?= python3
 NB_SRC := notebooks/kaggle-aas-private-eval-proxy.py
 NB_OUT := notebooks/kaggle-aas-private-eval-proxy.ipynb
+NB_BASE := kaggle-aas-private-eval-proxy.ipynb
 NB_TMP := notebooks/.configured.py
+BUILD := notebooks/.push
 CANDIDATES ?= private_eval_proxy/candidates.sample.jsonl
 TARGETS ?= gpt_oss,gemma
 ENV ?= private
@@ -20,11 +22,16 @@ REPS ?= 3
 CONCURRENCY ?= 8
 PUBLIC ?= 0
 KERNEL ?= maj0rt0m/private-eval-proxy
+KERNEL_GPU ?= maj0rt0m/private-eval-proxy-gpu
 SECRET_DATASET ?= maj0rt0m/aas-env
 PROXY_REF ?=
 
 # PUBLIC=1 -> Python `True` baked into the notebook's RUN_PUBLIC; anything else -> `False`.
 PUBPY := $(if $(filter 1,$(PUBLIC)),True,False)
+
+# TARGETS=gpt_oss,gemma -> a Python list literal ["gpt_oss", "gemma"] baked into the notebook so
+# a Kaggle push can be scoped to one model (e.g. just gpt_oss for a fast GPU debug cycle).
+TARGETS_PY := [$(shell echo '$(TARGETS)' | sed 's/[^,][^,]*/"&"/g; s/,/, /g')]
 
 # PROXY_REF=<branch|tag|sha> pins the notebook's git install to that ref (appends @REF to the
 # git+https PROXY_SOURCE). Used to test in-flight fixes from a debug branch before they hit main.
@@ -68,12 +75,15 @@ test:
 # Render the notebook straight from the jupytext source (no config baking).
 notebook:
 	jupytext --to notebook $(NB_SRC) -o $(NB_OUT)
-	@$(GATE)
+	@$(call GATE_FN,$(NB_OUT))
 
-# Token-literal gate, reused by every render path. Fails loudly if a key leaked into the notebook.
-GATE = if grep -nE "sk-or-[A-Za-z0-9]{8}|sk_live_[A-Za-z0-9]{6}|(OPENROUTER_API_KEY|API_KEY)[\"' ]*=[ ]*[\"'][A-Za-z0-9_-]{12}" $(NB_OUT); then \
+# Token-literal gate, reused by every render path: $(call GATE_FN,<ipynb>). Fails loudly if a key
+# leaked into the rendered notebook.
+define GATE_FN
+if grep -nE "sk-or-[A-Za-z0-9]{8}|sk_live_[A-Za-z0-9]{6}|(OPENROUTER_API_KEY|API_KEY)[\"' ]*=[ ]*[\"'][A-Za-z0-9_-]{12}" $(1); then \
 		echo "ERROR: possible token literal in notebook"; exit 1; \
 	else echo "notebook rendered; no token literal"; fi
+endef
 
 # OpenRouter = COST. Local pure replay against ONE env (ENV=private|public). Needs internet + key.
 # Cell scoring (score_v2) runs inline; budget allocation is a downstream/repo concern, not here.
@@ -81,24 +91,33 @@ run-openrouter:
 	@mkdir -p artifacts
 	@$(LOADENV) PYTHONPATH=. $(PY) -m private_eval_proxy.runner --backend openrouter --env $(ENV) --targets $(TARGETS) --reps $(REPS) --concurrency $(CONCURRENCY) --candidates $(CANDIDATES) --out artifacts/results-$(ENV).json
 
-# Both Kaggle targets bake BACKEND + RUN_PUBLIC into the config cell (Kaggle can't inherit local
-# env vars), render, push headlessly, then poll the kernel to a terminal status.
+# Both Kaggle targets bake BACKEND/RUN_PUBLIC/TARGETS/REPS/CONCURRENCY into the config cell (Kaggle
+# can't inherit local make/env vars), render into an isolated push dir alongside the right
+# kernel-metadata, push headlessly, then poll the kernel to a terminal status. The two backends use
+# SEPARATE kernels (openrouter is CPU+internet; gpu is GPU) so neither clobbers the other.
 run-kaggle-openrouter:
-	@$(MAKE) _kaggle-push BACKEND=openrouter
+	@$(MAKE) _kaggle-push BACKEND=openrouter META=kernel-metadata.json KERNEL=$(KERNEL)
 
 run-kaggle-gpu:
-	@$(MAKE) _kaggle-push BACKEND=kaggle_gguf
+	@$(MAKE) _kaggle-push BACKEND=kaggle_gguf META=kernel-metadata.gpu.json KERNEL=$(KERNEL_GPU)
 
-# internal: bake config -> render -> token-gate -> push -> poll.
+# internal: bake config -> render into $(BUILD) -> token-gate -> copy $(META) -> push -> poll.
+# A clean per-push dir keeps the committed kernel-metadata files untouched (the kaggle CLI requires
+# the metadata be named kernel-metadata.json in the push dir, so we copy the chosen one in).
 _kaggle-push:
+	@rm -rf $(BUILD) && mkdir -p $(BUILD)
 	@sed -e 's/^BACKEND = .*/BACKEND = "$(BACKEND)"  # baked by make/' \
 	     -e 's/^RUN_PUBLIC = .*/RUN_PUBLIC = $(PUBPY)  # baked by make/' \
+	     -e 's/^TARGETS = .*/TARGETS = $(TARGETS_PY)  # baked by make/' \
+	     -e 's/^REPS = .*/REPS = $(REPS)  # baked by make/' \
+	     -e 's/^CONCURRENCY = .*/CONCURRENCY = $(CONCURRENCY)  # baked by make/' \
 	     $(PROXY_SED) \
 	     $(NB_SRC) > $(NB_TMP)
-	jupytext --to notebook $(NB_TMP) -o $(NB_OUT)
+	jupytext --to notebook $(NB_TMP) -o $(BUILD)/$(NB_BASE)
 	@rm -f $(NB_TMP)
-	@$(GATE)
-	@$(LOADENV) cd notebooks && kaggle kernels push
+	@$(call GATE_FN,$(BUILD)/$(NB_BASE))
+	@cp notebooks/$(META) $(BUILD)/kernel-metadata.json
+	@$(LOADENV) cd $(BUILD) && kaggle kernels push
 	@echo "polling $(KERNEL) (Ctrl-C to detach; the run continues on Kaggle)..."
 	@$(LOADENV) while true; do \
 		s=$$(kaggle kernels status $(KERNEL) 2>/dev/null | tr -d '\r'); \
@@ -106,6 +125,7 @@ _kaggle-push:
 		case "$$s" in *complete*|*error*|*cancelAcknowledged*) break;; esac; \
 		sleep 20; \
 	done
+	@rm -rf $(BUILD)
 
 # (Re)create the PRIVATE secret dataset that delivers OPENROUTER_API_KEY to the kernel headlessly.
 # Builds a scratch env.json trimmed to ONLY OPENROUTER_API_KEY (never the Kaggle token / others)
@@ -120,4 +140,4 @@ package: notebook test
 	@echo "package ready: $(NB_OUT) rendered, tests green."
 
 clean:
-	rm -rf artifacts __pycache__ private_eval_proxy/__pycache__ tests/__pycache__ *.egg-info $(NB_TMP)
+	rm -rf artifacts __pycache__ private_eval_proxy/__pycache__ tests/__pycache__ *.egg-info $(NB_TMP) $(BUILD)

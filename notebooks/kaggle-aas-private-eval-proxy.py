@@ -40,10 +40,10 @@
 #
 # Pick a **backend** for the target models (and the LLM-judge):
 #
-# | backend | accelerator | internet | secret | cost view |
-# |---|---|---|---|---|
-# | `openrouter` | **None (CPU)** | **On** (Settings → Internet) | `OPENROUTER_API_KEY` | **$** |
-# | `kaggle_gguf` | **GPU (T4)** | off (models pre-staged) | none | **wall-time** |
+# | backend | accelerator | internet | secret | judge | cost view |
+# |---|---|---|---|---|---|
+# | `openrouter` | **None (CPU)** | **On** (Settings → Internet) | `OPENROUTER_API_KEY` | openrouter | **$** |
+# | `kaggle_gguf` | **GPU (T4)** | **On** (HF model pull + judge) | `OPENROUTER_API_KEY` | openrouter | **wall-time** |
 #
 # - **OpenRouter** is the easiest *and* the fastest: no GPU, just enable Internet and provide the
 #   key (3 ways below). Replays are network-bound, so they fan out across a thread pool sized by
@@ -51,11 +51,13 @@
 #   candidate**, so a **1,000-candidate** sweep is ≈ **~20 min and ~$0.10–0.15** at `CONCURRENCY=8`
 #   (raise it to go faster, until OpenRouter rate-limits). It **cannot** be the real *offline*
 #   competition submission (internet must be off there) — it is a validation tool.
-# - **kaggle_gguf** runs the official GGUF models on the GPU like `aas-local-validation`. A single
-#   model in GPU memory means replays run **serially** against a hard ~9,000 s/phase budget —
+# - **kaggle_gguf** runs the official GGUF target models on the GPU like `aas-local-validation`. A
+#   single model in GPU memory means replays run **serially** against a hard ~9,000 s/phase budget —
 #   empirically only ~160–620 single-hop candidates finish, and **~700+ time out and score zero**, so
-#   a ~1k-candidate portfolio **TLEs the competition deadline** here. OpenRouter is the quick loop;
-#   the GPU path is the faithful-but-slow offline check.
+#   a ~1k-candidate portfolio **TLEs the competition deadline** here. In this standalone notebook the
+#   GGUF is pulled from HuggingFace (internet **on**) and the **judge runs on OpenRouter** (the SDK
+#   `competition` judge needs a full HF model on the comp's hosted GPUs — it would OOM the T4). Set
+#   `JUDGE_BACKEND="mock"` for a pure target-path smoke with no judge model.
 #
 # The OpenRouter key is **never written into this notebook**. It is resolved, in order, from: (1) a
 # line you uncomment below, (2) Kaggle **Secrets**, or (3) a **private dataset** `env.json` attached
@@ -90,13 +92,24 @@ os.environ.setdefault("PYTHONUTF8", "1")
 print("backend:", BACKEND, "| env:", ENV, "| targets:", ", ".join(TARGETS), "| reps:", REPS)
 
 # %%
-# === OpenRouter key + internet (OpenRouter backend only) ===
-# Resolution order: (1) an inline value you set, (2) Kaggle Secrets, (3) a private dataset env.json.
-# No key literal is committed — leave the line below commented unless you are editing interactively.
+# === Judge backend + OpenRouter key + internet ===
+# The OpenRouter key/internet is needed by the OpenRouter **target** backend AND/OR an OpenRouter
+# **judge**. Resolution order for the key: (1) an inline value you set, (2) Kaggle Secrets, (3) a
+# private dataset env.json. No key literal is committed — leave the line below commented unless you
+# are editing interactively.
 
 # os.environ["OPENROUTER_API_KEY"] = "sk-or-v1-..."   # <-- uncomment to supply your own key inline
 
-if BACKEND == "openrouter" and not os.environ.get("OPENROUTER_API_KEY"):
+# Effective judge backend. Default **openrouter** for either target: it is the only real judge that
+# runs in this single-accelerator notebook (no GPU memory). The SDK 'competition' judge loads a full
+# HF model via `device_map=auto, local_files_only=True` and only runs on the competition's hosted
+# GPUs — it would OOM a T4 next to the GGUF target. Use 'mock' for a no-judge target-path smoke
+# (verdicts from PRIVATE_GUARD_JUDGE_MOCK_VERDICT); 'competition' only in the hosted comp env.
+JUDGE = (JUDGE_BACKEND or "openrouter").strip().lower()
+os.environ["PRIVATE_GUARD_JUDGE_BACKEND"] = JUDGE
+need_openrouter = (BACKEND == "openrouter") or (JUDGE == "openrouter")
+
+if need_openrouter and not os.environ.get("OPENROUTER_API_KEY"):
     # (2) Kaggle Secrets — convenient when editing in the Kaggle UI (Add-ons → Secrets).
     try:
         from kaggle_secrets import UserSecretsClient
@@ -115,12 +128,13 @@ if BACKEND == "openrouter" and not os.environ.get("OPENROUTER_API_KEY"):
             except Exception:
                 continue
 
-if BACKEND == "openrouter":
+if need_openrouter:
     if not os.environ.get("OPENROUTER_API_KEY"):
         raise RuntimeError(
-            "No OPENROUTER_API_KEY. Provide it one of three ways: uncomment the inline line above, "
-            "add it under Add-ons → Secrets, or attach a private dataset containing env.json via "
-            "kernel-metadata dataset_sources. Also enable Settings → Internet (phone-verified)."
+            "No OPENROUTER_API_KEY (needed by the OpenRouter target and/or judge). Provide it one of "
+            "three ways: uncomment the inline line above, add it under Add-ons → Secrets, or attach a "
+            "private dataset containing env.json via kernel-metadata dataset_sources. Also enable "
+            "Settings → Internet (phone-verified)."
         )
     import urllib.request
     try:
@@ -129,12 +143,7 @@ if BACKEND == "openrouter":
         raise RuntimeError(f"Cannot reach OpenRouter — enable Settings → Internet. ({e})")
     print("OpenRouter reachable; key not stored in the notebook.")
 
-# Judge backend: openrouter judge online, competition (SDK hosted model) offline.
-os.environ.setdefault(
-    "PRIVATE_GUARD_JUDGE_BACKEND",
-    JUDGE_BACKEND or ("openrouter" if BACKEND == "openrouter" else "competition"),
-)
-print("judge backend:", os.environ["PRIVATE_GUARD_JUDGE_BACKEND"])
+print("target backend:", BACKEND, "| judge backend:", JUDGE)
 
 # %%
 # === Dependencies ===
