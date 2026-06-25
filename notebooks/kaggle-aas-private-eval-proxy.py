@@ -197,8 +197,7 @@ if ATTACK_PY:
     candidates = [{"id": f"c{i}", "user_messages": list(c.user_messages)}
                   for i, c in enumerate(cand_objs)]
 else:
-    path = CANDIDATES_PATH or str(Path(private_eval_proxy.__file__).resolve().parent.parent
-                                  / "candidates.sample.jsonl")
+    path = CANDIDATES_PATH or str(runner.default_candidates_path())
     candidates = runner.load_candidates(Path(path))
     AttackAlgorithm = runner.attack_class_from_candidates(candidates)
 
