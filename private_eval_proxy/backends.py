@@ -8,9 +8,9 @@
     deterministic  — the SDK's `VulnerableDeterministicAgent` (no weights, no network) — for
                      fast CI smoke tests of the guard + scorer.
 
-The **judge** backend is an independent axis controlled by `PRIVATE_GUARD_JUDGE_BACKEND`
-(openrouter | competition), handled inside `private_judge`. Pair `kaggle_gguf` target with a
-`competition` judge for a fully-offline run.
+The **judge** is **not** an independent axis: it runs on the *same* backend and target model as the
+agent under test (see `judge_agent` below, wired from `runner.replay_one`'s `(backend, target)`). The
+only explicit override is `PRIVATE_GUARD_JUDGE_BACKEND=mock` — an opt-in no-judge stub for CI.
 """
 
 from __future__ import annotations
@@ -73,15 +73,38 @@ def default_concurrency(backend: str, requested: int) -> int:
     return 1 if (backend or "").strip().lower() in SERIAL_BACKENDS else max(1, requested)
 
 
+def judge_agent(backend: str, target: str, debug_sink=None):
+    """A fresh **judge** agent over the *same* backend + target model as the agent under test.
+
+    This is the judge counterpart of `make_agent_factory`: the judge is not a separately-configured
+    backend, it shares the run's wiring. `runner.replay_one` passes the run's `(backend, target)`
+    straight through (via the guardrail → `judge_allows`). The lone exception is the explicit
+    `mock` stub, handled in `private_judge` before this is reached.
+    """
+    backend = (backend or "openrouter").strip().lower()
+    if backend == "openrouter":
+        from private_eval_proxy.models import agent_factory
+
+        return agent_factory(target, debug_sink=debug_sink)()
+    if backend == "kaggle_gguf":
+        return gguf_judge_agent(target)
+    if backend == "deterministic":
+        raise RuntimeError(
+            "deterministic backend has no judge model; set PRIVATE_GUARD_JUDGE_BACKEND=mock "
+            "for the offline CI smoke path"
+        )
+    raise RuntimeError(f"Unknown backend {backend!r}; expected one of {VALID_BACKENDS}")
+
+
 def gguf_judge_agent(target: str):
     """A judge agent that **reuses the already-loaded GGUF target model** — no second weight load.
 
     The `kaggle_gguf` target leaves a single GGUF resident on the GPU (cached per target in
-    `_load_gguf_server`). The judge can ride that same `LlamaCppChatTemplateBackend`: we hand it to a
+    `_load_gguf_server`). The judge rides that same `LlamaCppChatTemplateBackend`: we hand it to a
     *fresh* agent (independent agent state, shared weights), so target replay and judging share one
-    model on one GPU — the SDK `competition` judge would instead load a second full HF model and OOM.
-    `next_action` takes the history per call, so a separate agent is safe; the gguf path is serial
-    (`default_concurrency`→1), so there is no concurrent access to the single llama.cpp instance.
+    model on one GPU. `next_action` takes the history per call, so a separate agent is safe; the gguf
+    path is serial (`default_concurrency`→1), so there is no concurrent access to the single
+    llama.cpp instance.
     """
     server = _load_gguf_server(target)
     return server.spec.create_agent(server._load_backend())

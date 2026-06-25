@@ -1,12 +1,9 @@
 """LLM-as-judge for the private-guard stand-in — the universal 2nd line of defense.
 
-Built on the SDK's *own* agent path (`AgentProtocol.next_action`), so the judge model is
-swappable between OpenRouter and the Kaggle-hosted competition model on demand:
-
-    PRIVATE_GUARD_JUDGE_BACKEND = openrouter (default) | competition
-    PRIVATE_GUARD_JUDGE_MODEL   = OpenRouter model id (default ``openai/gpt-oss-20b``) when
-                                  backend=openrouter; an ``AgentSelection`` value (default
-                                  ``gpt_oss``) when backend=competition
+Built on the SDK's *own* agent path (`AgentProtocol.next_action`). The judge is **not a separately
+configured backend**: it runs on the *same* backend and target model as the agent under test, wired
+through from `runner.replay_one`'s `(backend, target)` via the guardrail. The lone explicit override
+is ``PRIVATE_GUARD_JUDGE_BACKEND=mock`` — an opt-in no-judge stub for CI (no model, no network).
 
 Design constraints (see plan ``the-private-env-will-mossy-flame`` + memories):
   * **Reuse SDK machinery only** — every LLM call goes through `OpenAIResponsesAgent` /
@@ -69,38 +66,21 @@ class _MockJudgeAgent:
         return FinalResponseDecision(text=self._verdict)
 
 
-def _build_agent(debug_sink):
-    """Construct a fresh judge agent via the SDK agent path. No fallback on error."""
-    backend = os.environ.get("PRIVATE_GUARD_JUDGE_BACKEND", "openrouter").strip().lower()
-    if backend == "mock":
+def _build_agent(judge_backend, judge_target, debug_sink):
+    """Construct a fresh judge agent over the run's `(judge_backend, judge_target)` wiring.
+
+    The judge shares the agent-under-test's backend + model — it is not a separately-configured
+    backend. The sole explicit override is ``PRIVATE_GUARD_JUDGE_BACKEND=mock`` (an opt-in no-judge
+    stub for CI). No fallback on error.
+    """
+    if os.environ.get("PRIVATE_GUARD_JUDGE_BACKEND", "").strip().lower() == "mock":
         verdict = os.environ.get("PRIVATE_GUARD_JUDGE_MOCK_VERDICT", "ALLOW").strip().upper()
         if verdict not in ("ALLOW", "DENY"):
             raise RuntimeError(f"PRIVATE_GUARD_JUDGE_MOCK_VERDICT must be ALLOW|DENY, got {verdict!r}")
         return _MockJudgeAgent(verdict)
-    if backend == "openrouter":
-        from private_eval_proxy.models import _client
+    from private_eval_proxy.backends import judge_agent
 
-        from aicomp_sdk.agents.openai_agent import OpenAIResponsesAgent
-
-        model = os.environ.get("PRIVATE_GUARD_JUDGE_MODEL", "openai/gpt-oss-20b").strip()
-        return OpenAIResponsesAgent(client=_client(), model=model, debug_sink=debug_sink)
-    if backend in ("gguf", "local"):
-        # Reuse the already-loaded GGUF target model (one model on the GPU, shared with replay) —
-        # the only standalone-runnable local judge. `competition` (below) loads a separate full HF
-        # model and only runs on the comp's hosted GPUs.
-        from private_eval_proxy.backends import gguf_judge_agent
-
-        target = os.environ.get("PRIVATE_GUARD_JUDGE_MODEL", "gpt_oss").strip()
-        return gguf_judge_agent(target)
-    if backend == "competition":
-        from aicomp_sdk.agents.factory import AgentSelection, build_agent_factory
-
-        sel = os.environ.get("PRIVATE_GUARD_JUDGE_MODEL", "gpt_oss").strip()
-        return build_agent_factory(AgentSelection(sel), debug_sink=debug_sink)()
-    raise RuntimeError(
-        f"Unknown PRIVATE_GUARD_JUDGE_BACKEND={backend!r} "
-        "(expected 'mock', 'openrouter', 'gguf'/'local', or 'competition')"
-    )
+    return judge_agent(judge_backend, judge_target, debug_sink=debug_sink)
 
 
 def _truncate(value: Any, limit: int) -> str:
@@ -175,15 +155,18 @@ def judge_allows(
     args: Mapping[str, Any],
     context: Mapping[str, Any],
     state: Any,
+    judge_backend: str = "openrouter",
+    judge_target: str = "gpt_oss",
     debug_sink=None,
 ) -> bool:
     """Ask the LLM judge whether this privileged tool call should be allowed.
 
-    Returns True (allow) / False (deny). One model call per judgment via the SDK agent
-    path; no cache, no fallback (non-final decision / unparseable text / bad backend raise).
+    The judge runs on the run's `(judge_backend, judge_target)` — the same wiring as the agent under
+    test. Returns True (allow) / False (deny). One model call per judgment via the SDK agent path; no
+    cache, no fallback (non-final decision / unparseable text / bad backend raise).
     """
     payload = _format_payload(tool_name, args, context, state)
-    agent = _build_agent(debug_sink)
+    agent = _build_agent(judge_backend, judge_target, debug_sink)
     decision = agent.next_action(
         history=RuntimeHistory().with_instruction(JUDGE_SYS).with_user_message(payload),
         tools=(),

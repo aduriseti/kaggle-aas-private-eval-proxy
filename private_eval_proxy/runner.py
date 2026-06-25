@@ -67,7 +67,8 @@ def replay_one(rec: dict, target: str, *, guard_kind: str, max_hops: int,
     started = time.perf_counter()
 
     if guard_kind == "private":
-        guard = PrivateGuardrail(debug_sink=sink)
+        # The judge shares the agent-under-test's wiring: same backend + target model.
+        guard = PrivateGuardrail(debug_sink=sink, judge_backend=backend, judge_target=target)
 
         def hook_factory(_state=guard.state):
             reg = HookRegistry()

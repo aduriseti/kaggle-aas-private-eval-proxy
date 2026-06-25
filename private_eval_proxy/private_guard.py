@@ -181,13 +181,17 @@ class Guardrail(GuardrailBase):
     """Content+authorization private-guard stand-in. Shares `state` with the read hook.
 
     `debug_sink` (optional `AgentDebugSink`) is forwarded to the LLM judge so its tokens are
-    accounted in the same cost tally as the target agent. Build one Guardrail per replay.
+    accounted in the same cost tally as the target agent. `judge_backend`/`judge_target` wire the
+    judge to the *same* backend + model as the agent under test (passed by `runner.replay_one`).
+    Build one Guardrail per replay.
     """
 
-    def __init__(self, debug_sink=None) -> None:
+    def __init__(self, debug_sink=None, judge_backend="openrouter", judge_target="gpt_oss") -> None:
         super().__init__()
         self.state = PolicyState()
         self._debug_sink = debug_sink
+        self._judge_backend = judge_backend
+        self._judge_target = judge_target
 
     # --- snapshot/restore -------------------------------------------------
     def snapshot_state(self) -> Any:
@@ -255,7 +259,9 @@ class Guardrail(GuardrailBase):
         # share) and acts as a holistic catch-all for the other axes. No fallback / no cache.
         if privileged:
             if not judge_allows(
-                tool_name, args, context, self.state, debug_sink=self._debug_sink
+                tool_name, args, context, self.state,
+                judge_backend=self._judge_backend, judge_target=self._judge_target,
+                debug_sink=self._debug_sink,
             ):
                 return Decision.deny(
                     f"Blocked {tool_name}: LLM judge flagged this action as unsafe/unauthorized"
