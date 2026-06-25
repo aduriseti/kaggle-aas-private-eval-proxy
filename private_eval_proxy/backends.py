@@ -71,3 +71,17 @@ def _load_gguf_server(target: str):
 def default_concurrency(backend: str, requested: int) -> int:
     """Clamp concurrency to 1 for serial backends; otherwise honor the request."""
     return 1 if (backend or "").strip().lower() in SERIAL_BACKENDS else max(1, requested)
+
+
+def gguf_judge_agent(target: str):
+    """A judge agent that **reuses the already-loaded GGUF target model** — no second weight load.
+
+    The `kaggle_gguf` target leaves a single GGUF resident on the GPU (cached per target in
+    `_load_gguf_server`). The judge can ride that same `LlamaCppChatTemplateBackend`: we hand it to a
+    *fresh* agent (independent agent state, shared weights), so target replay and judging share one
+    model on one GPU — the SDK `competition` judge would instead load a second full HF model and OOM.
+    `next_action` takes the history per call, so a separate agent is safe; the gguf path is serial
+    (`default_concurrency`→1), so there is no concurrent access to the single llama.cpp instance.
+    """
+    server = _load_gguf_server(target)
+    return server.spec.create_agent(server._load_backend())

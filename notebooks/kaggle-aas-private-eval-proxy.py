@@ -43,7 +43,7 @@
 # | backend | accelerator | internet | secret | judge | cost view |
 # |---|---|---|---|---|---|
 # | `openrouter` | **None (CPU)** | **On** (Settings → Internet) | `OPENROUTER_API_KEY` | openrouter | **$** |
-# | `kaggle_gguf` | **GPU (T4)** | **On** (HF model pull + judge) | `OPENROUTER_API_KEY` | openrouter | **wall-time** |
+# | `kaggle_gguf` | **GPU (T4)** | **On** (one-time HF model pull) | none | **gguf (reuses target)** | **wall-time** |
 #
 # - **OpenRouter** is the easiest *and* the fastest: no GPU, just enable Internet and provide the
 #   key (3 ways below). Replays are network-bound, so they fan out across a thread pool sized by
@@ -54,10 +54,11 @@
 # - **kaggle_gguf** runs the official GGUF target models on the GPU like `aas-local-validation`. A
 #   single model in GPU memory means replays run **serially** against a hard ~9,000 s/phase budget —
 #   empirically only ~160–620 single-hop candidates finish, and **~700+ time out and score zero**, so
-#   a ~1k-candidate portfolio **TLEs the competition deadline** here. In this standalone notebook the
-#   GGUF is pulled from HuggingFace (internet **on**) and the **judge runs on OpenRouter** (the SDK
-#   `competition` judge needs a full HF model on the comp's hosted GPUs — it would OOM the T4). Set
-#   `JUDGE_BACKEND="mock"` for a pure target-path smoke with no judge model.
+#   a ~1k-candidate portfolio **TLEs the competition deadline** here. The GGUF is pulled from
+#   HuggingFace (internet **on**, one-time) and the **judge reuses that same loaded model** — one
+#   model on the GPU, no key, self-contained. (The SDK `competition` judge needs a separate full HF
+#   model on the comp's hosted GPUs — it would OOM here; `JUDGE_BACKEND="openrouter"` offloads the
+#   judge to the network instead, and `"mock"` runs no judge model at all.)
 #
 # The OpenRouter key is **never written into this notebook**. It is resolved, in order, from: (1) a
 # line you uncomment below, (2) Kaggle **Secrets**, or (3) a **private dataset** `env.json` attached
@@ -100,12 +101,14 @@ print("backend:", BACKEND, "| env:", ENV, "| targets:", ", ".join(TARGETS), "| r
 
 # os.environ["OPENROUTER_API_KEY"] = "sk-or-v1-..."   # <-- uncomment to supply your own key inline
 
-# Effective judge backend. Default **openrouter** for either target: it is the only real judge that
-# runs in this single-accelerator notebook (no GPU memory). The SDK 'competition' judge loads a full
-# HF model via `device_map=auto, local_files_only=True` and only runs on the competition's hosted
-# GPUs — it would OOM a T4 next to the GGUF target. Use 'mock' for a no-judge target-path smoke
-# (verdicts from PRIVATE_GUARD_JUDGE_MOCK_VERDICT); 'competition' only in the hosted comp env.
-JUDGE = (JUDGE_BACKEND or "openrouter").strip().lower()
+# Effective judge backend. Defaults that actually run in this single-accelerator notebook:
+#   - kaggle_gguf target -> **gguf**: the judge REUSES the already-loaded GGUF on the GPU (one model,
+#     no OpenRouter key/internet, no second load). This is the self-contained / offline-leaning path.
+#   - openrouter target  -> **openrouter**: judge over the network (no GPU).
+# Other options: 'mock' (no judge model — verdicts from PRIVATE_GUARD_JUDGE_MOCK_VERDICT, pure
+# target-path smoke); 'competition' loads a separate full HF model via `device_map=auto,
+# local_files_only=True` and only runs on the comp's hosted GPUs (it would OOM next to the GGUF).
+JUDGE = (JUDGE_BACKEND or ("gguf" if BACKEND == "kaggle_gguf" else "openrouter")).strip().lower()
 os.environ["PRIVATE_GUARD_JUDGE_BACKEND"] = JUDGE
 need_openrouter = (BACKEND == "openrouter") or (JUDGE == "openrouter")
 

@@ -100,6 +100,12 @@ def _injection_scanner() -> PromptInjection:
     return PromptInjection(threshold=_INJECTION_THRESHOLD, match_type=MatchType.SENTENCE)
 
 
+# The HF transformers pipeline behind PromptInjection carries non-reentrant decode state, so
+# concurrent scans from the runner's thread pool can corrupt it or raise. Serialize the scan for
+# the same reason as _SECRETS_LOCK below — the parallelism win is the network-bound model calls.
+_INJECTION_LOCK = threading.Lock()
+
+
 # detect_secrets keeps a process-global settings singleton that its scan path mutates in place
 # (`transient_settings`), so concurrent scans from the runner's thread pool race and corrupt the
 # plugin registry (KeyError on a detector name). Serialize just this scan — it's cheap regex/entropy
@@ -118,7 +124,8 @@ def _classify_injection(text: str) -> bool:
     """True if the text trips the prompt-injection classifier (is_valid==False)."""
     if not text:
         return False
-    _sanitized, is_valid, _score = _injection_scanner().scan(text[:8000])
+    with _INJECTION_LOCK:
+        _sanitized, is_valid, _score = _injection_scanner().scan(text[:8000])
     return not is_valid
 
 
@@ -284,7 +291,10 @@ def make_read_classifier_hook(state: PolicyState):
         if tool_name == "fs.read":
             norm = _norm((ctx.tool_args or {}).get("path", ""))
             state.read_paths.add(norm)
-            state.read_sensitive[norm] = _looks_secret(output)
+            # Sticky: once a path is seen holding a secret it stays sensitive. A later benign or
+            # empty re-read of the same path must NOT clear the verdict the destructive-write
+            # check relies on (overwriting here re-opened the clobber it was meant to block).
+            state.read_sensitive[norm] = state.read_sensitive.get(norm, False) or _looks_secret(output)
 
         return HookResult(continue_execution=True, payload_detected=state.tainted)
 
