@@ -95,8 +95,10 @@ print("backend:", BACKEND, "| env:", ENV, "| targets:", ", ".join(TARGETS), "| r
 # The OpenRouter key/internet is needed only when BACKEND == "openrouter". The LLM-**judge** is not a
 # separate axis — it runs on the *same* backend and model as the target agent (openrouter target ->
 # openrouter judge; kaggle_gguf target -> reuse the already-loaded GGUF on the GPU, no key/internet,
-# no second load). So a gguf run is self-contained. (Set PRIVATE_GUARD_JUDGE_BACKEND=mock for a
-# no-judge smoke — verdicts from PRIVATE_GUARD_JUDGE_MOCK_VERDICT.) Key resolution order: (1) an
+# no second load). So a gguf run is self-contained. (PRIVATE_GUARD_JUDGE_BACKEND explicitly overrides
+# the judge backend: =mock for a no-judge smoke — verdicts from PRIVATE_GUARD_JUDGE_MOCK_VERDICT — or
+# =openrouter/=kaggle_gguf to force one; unset uses the run backend; unknown raises.) Key resolution
+# order: (1) an
 # inline value you set, (2) Kaggle Secrets, (3) a private dataset env.json. No key literal is
 # committed — leave the line below commented unless you are editing interactively.
 

@@ -82,18 +82,18 @@ def judge_agent(backend: str, target: str, debug_sink=None):
     `mock` stub, handled in `private_judge` before this is reached.
     """
     backend = (backend or "openrouter").strip().lower()
-    if backend == "openrouter":
-        from private_eval_proxy.models import agent_factory
-
-        return agent_factory(target, debug_sink=debug_sink)()
     if backend == "kaggle_gguf":
+        # Deliberately NOT make_agent_factory's cached `server._load_agent()`: the judge needs a
+        # fresh agent (independent agent state) riding the same resident GGUF — see gguf_judge_agent.
         return gguf_judge_agent(target)
     if backend == "deterministic":
         raise RuntimeError(
             "deterministic backend has no judge model; set PRIVATE_GUARD_JUDGE_BACKEND=mock "
-            "for the offline CI smoke path"
+            "(offline CI smoke) or =openrouter (a real judge over the deterministic target run)"
         )
-    raise RuntimeError(f"Unknown backend {backend!r}; expected one of {VALID_BACKENDS}")
+    # openrouter (and any future networked backend) share make_agent_factory's wiring; a judge is
+    # just a fresh agent instance over that same factory. Unknown backends raise there.
+    return make_agent_factory(backend, target, debug_sink=debug_sink)()
 
 
 def gguf_judge_agent(target: str):

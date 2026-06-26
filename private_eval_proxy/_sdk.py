@@ -92,7 +92,14 @@ def _load_env_json() -> None:
             seen.add(cand)
             if cand.is_file():
                 try:
-                    data = json.loads(cand.read_text())
+                    raw = cand.read_text()
+                except (OSError, UnicodeDecodeError):
+                    # Unreadable (permissions), a directory named env.json, or non-UTF-8: skip and
+                    # try the next candidate up the tree, as before. Only genuinely malformed JSON
+                    # (below) is a user error worth surfacing.
+                    continue
+                try:
+                    data = json.loads(raw)
                 except json.JSONDecodeError as exc:
                     # A malformed env.json is a user error to surface, not to swallow and silently
                     # run without secrets (which later fails opaquely on a missing API key).

@@ -116,6 +116,10 @@ def replay_one(rec: dict, target: str, *, guard_kind: str, max_hops: int,
     cost["n_user_messages"] = len(rec["user_messages"])
     cost["prompt_chars"] = sum(len(m) for m in rec["user_messages"])
     cost["candidate_raw"] = score_attack_raw([finding]) if finding else 0.0
+    # The private guard records each judge verdict (tool, ALLOW/DENY, rationale); carry it out so the
+    # CLI artifact can show *why* the judge allowed/denied. Public guard has no judge.
+    if guard_kind == "private":
+        cost["judge_decisions"] = list(guard.judge_log)
     return trace, predicates, finding, cost
 
 
@@ -138,6 +142,7 @@ class RepResult:
     wall_s: float
     cost_usd: float
     cost_seen: bool            # False ⇒ backend didn't report usage.cost (cost unknown, not $0)
+    judge_decisions: list[dict] = field(default_factory=list)  # per-judgment {tool, verdict, rationale}
 
 
 @dataclass
@@ -158,10 +163,12 @@ class CandidateStats:
     cost_reported: bool        # True ⇒ every rep reported usage.cost (mean_cost_usd is real)
     trials_sev: list[float] = field(default_factory=list)
     trials_tokens: list[float] = field(default_factory=list)
+    trials_judge_decisions: list[list[dict]] = field(default_factory=list)  # per-rep judge verdicts
 
 
 def _rep_result(rec: dict, tup, guard_kind: str) -> RepResult:
     m = aggregate.rep_metrics(tup, guard_kind=guard_kind)
+    cost = tup[3] or {}
     return RepResult(
         id=rec["id"],
         fired=m.fired,
@@ -173,6 +180,7 @@ def _rep_result(rec: dict, tup, guard_kind: str) -> RepResult:
         wall_s=m.wall_s,
         cost_usd=m.cost_usd,
         cost_seen=m.cost_seen,
+        judge_decisions=cost.get("judge_decisions", []),
     )
 
 
@@ -202,13 +210,14 @@ def _aggregate(rec: dict, target: str, guard_kind: str, reps_out: list[RepResult
         cost_reported=all(r.cost_seen for r in reps_out),
         trials_sev=[r.severity for r in reps_out],
         trials_tokens=[float(r.output_tokens) for r in reps_out],
+        trials_judge_decisions=[r.judge_decisions for r in reps_out],
     )
 
 
 def evaluate(candidates: list[dict], target: str, *, guard_kind: str,
              backend: str = "openrouter", reps: int = 3,
              max_hops: int = EVALUATION_DEFAULT_MAX_TOOL_HOPS,
-             concurrency: int = 8) -> list[CandidateStats]:
+             concurrency: int = 32) -> list[CandidateStats]:
     """Replay every (candidate × rep) against `target` in env `guard_kind`, concurrently when the
     backend allows it. Returns per-candidate aggregated stats (order preserved). CLI convenience —
     the repo orchestrator calls `replay_one` directly for the raw tuple."""
@@ -257,13 +266,10 @@ def attack_class_from_candidates(candidates: list[dict]):
 
 
 def default_candidates_path() -> Path:
-    """Path to the bundled sample candidates. Works both **installed** (shipped as package
-    data beside this module) and from a **source checkout** (repo root, for editable/local
-    runs where the file may still sit next to pyproject.toml)."""
-    packaged = Path(__file__).resolve().parent / "candidates.sample.jsonl"
-    if packaged.is_file():
-        return packaged
-    return Path(__file__).resolve().parent.parent / "candidates.sample.jsonl"
+    """Path to the bundled sample candidates — shipped as package data beside this module, so it
+    resolves identically whether installed via the wheel (`tool.setuptools.package-data`) or run
+    from a source checkout."""
+    return Path(__file__).resolve().parent / "candidates.sample.jsonl"
 
 
 def load_candidates(path: Path) -> list[dict]:
@@ -288,7 +294,7 @@ def main(argv=None) -> int:
     parser.add_argument("--env", required=True, choices=["public", "private"],
                         help="which guard regime to replay against (no default — pick one)")
     parser.add_argument("--reps", type=int, default=3, help="replays per candidate")
-    parser.add_argument("--concurrency", type=int, default=8, help="parallel replays (network backends)")
+    parser.add_argument("--concurrency", type=int, default=32, help="parallel replays (network backends)")
     parser.add_argument("--max-hops", type=int, default=EVALUATION_DEFAULT_MAX_TOOL_HOPS)
     parser.add_argument("--out", default=None, help="optional path to write raw per-attack JSON")
     args = parser.parse_args(argv)

@@ -45,7 +45,7 @@ from private_eval_proxy import _sdk as _bootstrap  # noqa: F401  (side effects: 
 from llm_guard.input_scanners import PromptInjection, Secrets
 from llm_guard.input_scanners.prompt_injection import MatchType
 
-from private_eval_proxy.private_judge import judge_allows
+from private_eval_proxy.private_judge import build_judge_agent, judge_allows
 
 from aicomp_sdk.agents.tool_specs import serialize_tool_output
 from aicomp_sdk.core.predicates import (
@@ -192,6 +192,12 @@ class Guardrail(GuardrailBase):
         self._debug_sink = debug_sink
         self._judge_backend = judge_backend
         self._judge_target = judge_target
+        # Built once on first privileged call and reused (the judge is stateless across judgments —
+        # `next_action` takes the history per call), instead of rebuilt on every judgment.
+        self._judge_agent = None
+        # Append-only audit log of every judge verdict this replay made (tool, ALLOW/DENY, rationale);
+        # surfaced into the run artifact by `runner.replay_one`.
+        self.judge_log: list[dict] = []
 
     # --- snapshot/restore -------------------------------------------------
     def snapshot_state(self) -> Any:
@@ -258,13 +264,23 @@ class Guardrail(GuardrailBase):
         # The judge is uniquely responsible for CONFUSED_DEPUTY (non-injection unauthorized
         # share) and acts as a holistic catch-all for the other axes. No fallback / no cache.
         if privileged:
-            if not judge_allows(
-                tool_name, args, context, self.state,
-                judge_backend=self._judge_backend, judge_target=self._judge_target,
-                debug_sink=self._debug_sink,
-            ):
+            if self._judge_agent is None:
+                self._judge_agent = build_judge_agent(
+                    self._judge_backend, self._judge_target, self._debug_sink
+                )
+            verdict = judge_allows(
+                tool_name, args, context, self.state, agent=self._judge_agent,
+            )
+            self.judge_log.append(
+                {"tool_name": tool_name, "verdict": verdict.verdict, "rationale": verdict.rationale}
+            )
+            if not verdict.allowed:
+                reason = verdict.rationale.strip()
+                if len(reason) > 300:
+                    reason = reason[:300].rstrip() + "…"
                 return Decision.deny(
                     f"Blocked {tool_name}: LLM judge flagged this action as unsafe/unauthorized"
+                    + (f" — {reason}" if reason else "")
                 )
 
         return Decision.allow("Operation allowed")
