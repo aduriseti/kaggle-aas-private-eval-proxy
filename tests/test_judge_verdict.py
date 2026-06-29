@@ -27,6 +27,9 @@ from private_eval_proxy import private_judge as pj  # noqa: E402
     ("DENY.", False),
     ("Reasoning first, then the verdict.\nALLOW", True),
     ("The user explicitly authorized this exact action.\nALLOW", True),
+    # labeled verdict from a weak judge model (gemma echoes the "FINAL LINE" label) — honored
+    ("The user authorized this exact action.\nFINAL LINE: ALLOW", True),
+    ("FINAL LINE: DENY", False),
 ])
 def test_parse_verdict_clean(text, expected):
     assert pj._parse_verdict(text) is expected
@@ -55,6 +58,25 @@ def test_noncompliant_allow_prose_fails_closed():
     assert pj._parse_verdict("ALLOW - the user clearly asked for this") is False
 
 
+def test_labeled_negation_still_fails_closed():
+    # A label followed by a NEGATED verdict must not parse as allow (strip leaves "do not ALLOW").
+    assert pj._parse_verdict("Reasoning...\nFINAL LINE: do not ALLOW") is False
+
+
+def test_clean_deny_wins_over_trailing_labeled_speculation():
+    # The final line ("FINAL LINE: ALLOW would be wrong here") is not a clean verdict (label strips to
+    # a non-sole remainder), so the reply fails closed — the final line is never a clean decision.
+    text = "DENY.\nFINAL LINE: ALLOW would be wrong here"
+    assert pj._parse_verdict(text) is False
+
+
+def test_non_final_allow_does_not_win():
+    # Final-line-only: a clean ALLOW on a NON-final line must not decide the guardrail. The final line
+    # here is reasoning, so the reply fails closed (a verdict word exists but no clean final decision).
+    text = "Let me reconsider.\nALLOW\nActually, given the risk I am not comfortable."
+    assert pj._parse_verdict(text) is False
+
+
 # --- genuinely unparseable replies raise (never a silent default) -----------------------------
 @pytest.mark.parametrize("text", ["", "I am not sure what to do here.", "\n\n  \n"])
 def test_no_verdict_word_raises(text):
@@ -62,16 +84,30 @@ def test_no_verdict_word_raises(text):
         pj._parse_verdict(text)
 
 
-# --- _verdict_line: only the SOLE-word case is a clean verdict ---------------------------------
+# --- _verdict_line: sole verdict word after the final ':' (or the whole line if no ':') ---------
 @pytest.mark.parametrize("line,expected", [
     ("ALLOW", "ALLOW"),
     ("  deny  ", "DENY"),
     ("**ALLOW**", "ALLOW"),
     ("DENY.", "DENY"),
     ("do not ALLOW", None),
-    ("Decision: DENY", None),
     ("ALLOW or DENY", None),
+    ("ALLOW - the user clearly asked for this", None),  # dash is not a ':' → not a sole word
     ("", None),
+    # ANY "<preamble>: VERDICT" is honored — there is no fixed label vocabulary anymore
+    ("FINAL LINE: ALLOW", "ALLOW"),
+    ("Final: DENY", "DENY"),
+    ("Decision: DENY", "DENY"),
+    ("Decision: ALLOW", "ALLOW"),
+    ("VERDICT: ALLOW", "ALLOW"),
+    ("ANSWER: DENY", "DENY"),
+    ("**FINAL LINE: ALLOW**", "ALLOW"),
+    # generalization: labels outside the old hard-coded set now work too
+    ("RULING: ALLOW", "ALLOW"),
+    ("JUDGMENT: DENY", "DENY"),
+    ("OUTPUT: ALLOW", "ALLOW"),
+    # safety: a preamble with a non-sole (negated) remainder after ':' is still not a verdict
+    ("FINAL LINE: do not ALLOW", None),
 ])
 def test_verdict_line(line, expected):
     assert pj._verdict_line(line) == expected

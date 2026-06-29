@@ -138,15 +138,18 @@ def _verdict_tokens(s: str) -> list[str]:
 
 
 def _verdict_line(line: str) -> str | None:
-    """Return ``"ALLOW"``/``"DENY"`` only if that is the line's SOLE alphabetic word.
+    """Return ``"ALLOW"``/``"DENY"`` iff the SOLE alphabetic word AFTER the final ``:`` (or the whole
+    line, if there is no ``:``) is that verdict.
 
-    The prompt asks the judge to end with a final line containing only the decision word, so the
-    deciding line is exactly that. Requiring the verdict to be the only word rejects reasoning lines
-    ("...would let it ALLOW exfiltration") and negations ("do not ALLOW") — both of which the old
-    last-single-verdict-token scan misread as a verdict, flipping a DENY to an ALLOW. Surrounding
-    whitespace/punctuation/markup (``**DENY**``, ``DENY.``) is ignored.
+    The prompt asks the judge to end with a final line containing the decision. So a bare ``ALLOW``, a
+    labeled ``FINAL LINE: ALLOW``, or ANY ``<preamble>: ALLOW`` are honored — there is no fixed label
+    vocabulary. Requiring the post-colon remainder to be the SOLE verdict word keeps reasoning and
+    negations fail-closed: ``do not ALLOW`` (no colon) and ``FINAL LINE: do not ALLOW`` both reduce to
+    a non-sole remainder → ``None``; so do ``ALLOW or DENY`` and ``ALLOW - the user asked`` (a dash is
+    not a ``:``). Surrounding whitespace/punctuation/markup (``**DENY**``, ``DENY.``) is ignored.
     """
-    words = re.findall(r"[A-Za-z]+", line.upper())
+    tail = line.rpartition(":")[2]      # text after the last ':'; the whole line if there is none
+    words = re.findall(r"[A-Za-z]+", tail.upper())
     if words == ["ALLOW"]:
         return "ALLOW"
     if words == ["DENY"]:
@@ -157,17 +160,23 @@ def _verdict_line(line: str) -> str | None:
 def _parse_verdict(text: str) -> bool:
     """Return True for ALLOW, False for DENY. Fail-closed: ALLOW only on a clean verdict.
 
-    Read the verdict from the last line that is a clean single-word decision (`_verdict_line`) — the
-    format the prompt mandates. If no such line exists the reply is non-compliant, and a guardrail
-    must NOT infer ALLOW from free-form prose: token-counting can't tell "ALLOW" from "do not ALLOW",
-    so any reply carrying a verdict word but no clean decision line is denied. A reply with no verdict
-    word at all is genuinely unparseable and raises (never a silent default).
+    The verdict is read from the FINAL non-empty line ONLY (`_verdict_line`) — the format the prompt
+    mandates ("end with a final line containing only the decision"). The final line is authoritative;
+    we deliberately do NOT scan back through earlier lines, so a stray verdict buried in reasoning
+    ("...we could ALLOW this") cannot decide the guardrail. If that final line is not a clean decision
+    the reply is non-compliant, and a guardrail must NOT infer ALLOW from free-form prose:
+    token-counting can't tell "ALLOW" from "do not ALLOW", so any reply carrying a verdict word but no
+    clean final decision line is denied. A reply with no verdict word at all is genuinely unparseable
+    and raises (never a silent default).
     """
     raw = text or ""
     for line in reversed(raw.splitlines()):
-        v = _verdict_line(line)
+        if not line.strip():
+            continue                       # skip trailing blank lines to reach the final content line
+        v = _verdict_line(line)            # the FINAL content line is the sole authority
         if v is not None:
             return v == "ALLOW"
+        break                              # final line isn't a clean verdict → fail closed below
     if _verdict_tokens(raw):
         return False
     raise RuntimeError(f"Judge produced an unparseable verdict: {text!r}")

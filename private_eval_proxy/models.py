@@ -57,7 +57,12 @@ TARGETS: dict[str, str] = {
 
 @lru_cache(maxsize=1)
 def _client():
-    return _UsageAccountingClient(OpenAI(base_url=OPENROUTER_BASE, api_key=openrouter_key()))
+    # timeout=30s per HTTP request (default is 600s) so a stalled OpenRouter upstream fails fast
+    # instead of freezing a whole eval; max_retries=2 (the OpenAI SDK default, made explicit) →
+    # worst case ~3 attempts ≈ 90s + backoff before a candidate's rep is abandoned.
+    return _UsageAccountingClient(
+        OpenAI(base_url=OPENROUTER_BASE, api_key=openrouter_key(), timeout=30.0, max_retries=2)
+    )
 
 
 def resolve_model(target: str) -> str:
